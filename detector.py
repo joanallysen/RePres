@@ -5,7 +5,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
 
-import re
+import regex as re
 
 # =============================================================================
 # 1. CONFIG - everything you are likely to tweak lives here

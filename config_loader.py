@@ -1,6 +1,6 @@
 # a very rough config loader
 
-import re
+import regex as re
 import tomllib
 from pathlib import Path
 
@@ -18,21 +18,21 @@ def load_secret_rules(path: str | Path) -> tuple[list[SecretRule], list[tuple[st
             continue
         try: 
             re.compile(r["regex"])
-        except re.error as r:
-            failed.append((r['id'], str(e)))
+        except re.error as e:
+            failed.append((r.get("id", "<no id>"), str(e)))
             continue
         rules.append(
             SecretRule(
                 id=r['id'],
                 description=r.get('description', ''),
                 regex=r['regex'],
-                keyowrds=tuple(k.lower() for k in r.get('keywords', [])),
+                keywords=tuple(k.lower() for k in r.get('keywords', [])),
                 secret_group=int(r.get('secretGroup', 0)),
                 entropy=float(r['entropy']) if r.get('entropy') else None,
                 score=float(r.get('score', DEFAULT_SCORE)),
         ))
 
-    return rules.failed
+    return rules, failed
 
 
 # [[rules]]
