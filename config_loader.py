@@ -6,6 +6,10 @@ from pathlib import Path
 
 from detector import SecretRule, DEFAULT_SCORE
 
+def _parse_allowlist(section: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    # return (regexes, stopwords) from one allowlist shaped table. ignore paths
+    return tuple(section.get('regexes', [])), tuple(w.lower() for w in section.get('stopwords', []))
+
 # this convert GO to python re, expect error.
 def load_secret_rules(path: str | Path) -> tuple[list[SecretRule], list[tuple[str,str]]]:
     # return (rules, failed). basically the second part of tuple retun a list of error, rule that doesnt work in re

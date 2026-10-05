@@ -82,6 +82,8 @@ class SecretRule:
     secret_group: int = 0       #  0 = not set
     entropy: float | None=None  # minimum entropy of secret (this is gitleaks semanticcs)
     score: float = DEFAULT_SCORE
+    allow_regexes: tuple[str, ...] = ()     # per rule allowlist, hard drop
+    allow_stopwords: tuple[str, ...] = ()   # per rule allowlist, hard drop
 
 
 
@@ -103,6 +105,8 @@ ALLOW_EXACT: set[str] = {"password", "secret", "token", "apikey", "api_key",
 # Regexes matched against the extracted secret: dropped. Example: r"^[0-9a-f]{40}$" ignores git SHAs.
 ALLOW_REGEXES: list[str] = []
 
+# from gitleaks global allowlist stopwords or regexes, hard drop make score to 0, unlike allow stopword which only demote the score, populated at regex engine creation
+ALLOW_STOPWORDS_HARD: list[str] = []
 
 # =============================================================================
 # 2. FINDING - the record every later stage consumes
@@ -165,9 +169,14 @@ class RegexDetector(DetectionEngine):
     def __init__(self, rules: list[SecretRule] = SECRET_RULES):
         if rules is None:
             from config_loader import load_secret_rules # lazy import, avoid circular import
-            rules, _failed = load_secret_rules(GITLEAKS_TOML)
+            rules, _failed, global_allow = load_secret_rules(GITLEAKS_TOML)
+            ALLOW_REGEXES.extend(global_allow['regexes'])
+            ALLOW_STOPWORDS_HARD.extend(global_allow['stopwords'])
         self._rules = [(r, re.compile(r.regex)) for r in rules]
         self._allow_rx = [re.compile(p) for p in ALLOW_REGEXES]
+        self._rule_allow_rx = {
+            r.id: [re.compile(p) for p in r.allow_regexes] for r in rules if r.allow_regexes
+        }
 
     @staticmethod
     def _secret_span(rule: SecretRule, m: re.Match) -> tuple[int,int]:
@@ -196,10 +205,16 @@ class RegexDetector(DetectionEngine):
                     findings.append(Finding(rule.id, value, start, end, score, Tier.SECRET, self.layer))
         return findings
 
+    #TODO: add more explanation about regex score system in architecture.md
     def _score(self, rule: SecretRule, value: str) -> float:
         low = value.lower()
-        if low in ALLOW_EXACT or any(rx.search(value) for rx in self._allow_rx):
+        if low in ALLOW_EXACT or low in ALLOW_STOPWORDS_HARD:
             return 0.0
+        if any(rx.search(value) for rx in self._allow_rx):
+            return 0.0
+        for rx in self._rule_allow_rx.get(rule.id, []):
+            if rx.search(value):
+                return 0.0
         score = rule.score
         if any(w in low for w in ALLOW_STOPWORDS):
             score *= 0.4
