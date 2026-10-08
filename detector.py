@@ -71,7 +71,34 @@ PII_ENTITY_TIER: dict[str, Tier] = {
 # Exact strings Presidio must never flag (e.g. your own city or company contact).
 PII_ALLOW_LIST: list[str] = []
 
+
+
+from functools import lru_cache
+@lru_cache(maxsize=None)
+def _rx(p): return re.compile(p)
+
+def pick_secret(m, secret_group):
+    if secret_group: # rule says which group (only sonar does)
+        return m.group(secret_group), m.span(secret_group)
+    for i, g in enumerate(m.groups(), start=1):
+        if g:
+            return g, m.span(i)
+    return m.group(0), m.span(0)
+
+def is_allowed(al, secret, match, line):
+    if any(w in secret.lower() for w in al.stopwords):
+        return True
+    target = {"secret": secret, "match": match, "line": line}[al.target]
+    return any(_rx(p).search(target) for p in al.regexes)   # _rx = cached re.compile
 # --- Secrets (regex layer) ---------------------------------------------------
+
+@dataclass (frozen=True)
+class Allowlist:
+    target: str = "secret" # either "secret" "match" or "line"
+    regexes: tuple[str, ...] = ()
+    stopwords: tuple[str, ...] = ()
+
+
 # changed the secret tule to match gitleaks
 @dataclass(frozen=True)
 class SecretRule:
@@ -82,8 +109,7 @@ class SecretRule:
     secret_group: int = 0       #  0 = not set
     entropy: float | None=None  # minimum entropy of secret (this is gitleaks semanticcs)
     score: float = DEFAULT_SCORE
-    allow_regexes: tuple[str, ...] = ()     # per rule allowlist, hard drop
-    allow_stopwords: tuple[str, ...] = ()   # per rule allowlist, hard drop
+    allowlists: tuple[Allowlist, ...] = ()
 
 
 
@@ -166,26 +192,15 @@ def _entropy(s: str) -> float:
 class RegexDetector(DetectionEngine):
     layer = "regex"
 
-    def __init__(self, rules: list[SecretRule] = SECRET_RULES):
+    def __init__(self, rules: list[SecretRule]| None = None):
+        self._global_allow = None
         if rules is None:
-            from config_loader import load_secret_rules # lazy import, avoid circular import
-            rules, _failed, global_allow = load_secret_rules(GITLEAKS_TOML)
-            ALLOW_REGEXES.extend(global_allow['regexes'])
-            ALLOW_STOPWORDS_HARD.extend(global_allow['stopwords'])
+            from config_loader import load_secret_rules
+            rules, _failed, self._global_allow = load_secret_rules(GITLEAKS_TOML)
         self._rules = [(r, re.compile(r.regex)) for r in rules]
         self._allow_rx = [re.compile(p) for p in ALLOW_REGEXES]
-        self._rule_allow_rx = {
-            r.id: [re.compile(p) for p in r.allow_regexes] for r in rules if r.allow_regexes
-        }
 
-    @staticmethod
-    def _secret_span(rule: SecretRule, m: re.Match) -> tuple[int,int]:
-        g = rule.secret_group
-        if g == 0 and m.re.groups:
-            g = 1
-        start, end = m.span(g)
-        return m.span() if start < 0 else (start, end)
-    
+
 
     def detect(self, text: str) -> list[Finding]:
         lowered = text.lower()
@@ -196,25 +211,23 @@ class RegexDetector(DetectionEngine):
                 continue
             # 2. regex: find secret candidates
             for m in rx.finditer(text):
-                # 3. extraction: narrow to the secret value itself when the rule has a group
-                start, end = self._secret_span(rule, m)
-                value = text[start:end]
-                # 4 + 5. allowlist and entropy -> final confidence
-                score = self._score(rule, value)
+                value, (start, end) = pick_secret(m, rule.secret_group)
+                line = line_of(text, *m.span())
+                score = self._score(rule, value, m.group(0), line)
                 if score >= DISCARD_BELOW:
                     findings.append(Finding(rule.id, value, start, end, score, Tier.SECRET, self.layer))
         return findings
 
     #TODO: add more explanation about regex score system in architecture.md
-    def _score(self, rule: SecretRule, value: str) -> float:
+    def _score(self, rule: SecretRule, value: str, match_text: str, line: str) -> float:
         low = value.lower()
         if low in ALLOW_EXACT or low in ALLOW_STOPWORDS_HARD:
             return 0.0
         if any(rx.search(value) for rx in self._allow_rx):
             return 0.0
-        for rx in self._rule_allow_rx.get(rule.id, []):
-            if rx.search(value):
-                return 0.0
+        allowlists = ((self._global_allow, ) if self._global_allow else ()) + rule.allowlists
+        if any(is_allowed(al, value, match_text, line) for al in allowlists):
+            return 0.0
         score = rule.score
         if any(w in low for w in ALLOW_STOPWORDS):
             score *= 0.4
@@ -314,11 +327,18 @@ def detect(text: str, layers: tuple[str, ...] = ("regex", "presidio")) -> list[F
 # 6. DEMO - all values below are fake
 # =============================================================================
 
+
+
+def line_of(text, start, end):
+    ls = text.rfind("\n", 0, start) + 1
+    le = text.find("\n", end)
+    return text[ls: len(text) if le == -1 else le]
+
+
+
 # write the sample later, i cannot push to github because the sample was too realistic lol
 if __name__ == "__main__":
-    samples = [
-
-    ]
+    from samples import samples
     
     print(f"spaCy model: {SPACY_MODEL}")
     t0 = time.perf_counter()

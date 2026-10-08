@@ -3,7 +3,7 @@ from config_loader import load_secret_rules
 def main():
     # array 0 for showing secret rules ajsut wrnd 1 for failure
     # every secret rule is defaulted to 0.85 as of right now
-    rules, failure = load_secret_rules('gitleaks.toml')
+    rules, failure, dict = load_secret_rules('gitleaks.toml')
     with open("config_test_results.txt", "w", encoding="utf-8") as f:
         f.write("GITLEAKS CONFIG TEST\n")
 
