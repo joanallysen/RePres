@@ -7,6 +7,8 @@ from enum import Enum
 
 import regex as re
 
+
+
 # =============================================================================
 # 1. CONFIG - everything you are likely to tweak lives here
 # =============================================================================
@@ -60,7 +62,6 @@ PII_ENTITY_TIER: dict[str, Tier] = {
     "PERSON": Tier.PII_MODERATE,
     "EMAIL_ADDRESS": Tier.PII_MODERATE,
     "PHONE_NUMBER": Tier.PII_MODERATE,
-    "NRP": Tier.PII_MODERATE,
     "LOCATION": Tier.PII_LOW,
     "IP_ADDRESS": Tier.PII_LOW,
     "MAC_ADDRESS": Tier.PII_LOW,
@@ -112,13 +113,17 @@ class SecretRule:
     allowlists: tuple[Allowlist, ...] = ()
 
 
-
-# All quantifiers are bounded to avoid catastrophic backtracking on long input.
-_START = r"(?<![A-Za-z0-9])" # the character immediately before it must not be a letter or digit.
-_END = r"(?![A-Za-z0-9_-])" # the character immediately after it must not be a letter, digit, _, or -.
-
-SECRET_RULES: list[SecretRule] = []
-
+# this is manually added, as some secret cannot be find by gitleaks.toml
+SECRET_RULES: list[SecretRule] = [
+    SecretRule(
+        id="uri-credentials",
+        description="Password embedded in a connection string or URL.",
+        regex=r"""(?i)\b[a-z][a-z0-9+.-]{1,20}://[^\s:/@'"]{0,64}:([^\s@'"/]{3,128})@""",
+        keywords=("://",),
+        secret_group=1,
+        score=0.9,
+    )
+]
 # --- Allowlist (checked against the EXTRACTED secret, like Gitleaks "stopwords") ---
 # Placeholder-looking values: confidence x0.4 (lands in the "unsure" band, or is dropped).
 ALLOW_STOPWORDS: tuple[str, ...] = (
@@ -197,6 +202,7 @@ class RegexDetector(DetectionEngine):
         if rules is None:
             from config_loader import load_secret_rules
             rules, _failed, self._global_allow = load_secret_rules(GITLEAKS_TOML)
+            rules = rules + SECRET_RULES
         self._rules = [(r, re.compile(r.regex)) for r in rules]
         self._allow_rx = [re.compile(p) for p in ALLOW_REGEXES]
 
@@ -243,6 +249,7 @@ class RegexDetector(DetectionEngine):
 class PresidioDetector(DetectionEngine):
     layer = "presidio"
 
+
     def __init__(self, model: str | None = None):
         self._model = model or SPACY_MODEL
         self._analyzer = None  # built lazily: loading the spaCy model is slow
@@ -273,11 +280,17 @@ class PresidioDetector(DetectionEngine):
             score_threshold=DISCARD_BELOW,
             allow_list=PII_ALLOW_LIST or None,
         )
-        return [
-            Finding(r.entity_type, text[r.start:r.end], r.start, r.end,
-                    float(r.score), PII_ENTITY_TIER[r.entity_type], self.layer)
-            for r in results
-        ]
+        findings = []
+        for r in results:
+            start, end = r.start, r.end
+            if r.entity_type == "EMAIL_ADDRESS":
+                value = text[start:end]
+                start += max(value.rfind("="), value.rfind('"')) + 1   # drop "to=" style prefixes
+                value = text[start:end]
+                start += len(value) - len(value.lstrip("'"))           # drop a leading quote
+            findings.append(Finding(r.entity_type, text[start:end], start, end,
+                                    float(r.score), PII_ENTITY_TIER[r.entity_type], self.layer))
+        return findings
 
 
 # =============================================================================
@@ -290,7 +303,7 @@ def _resolve_overlaps(findings: list[Finding]) -> list[Finding]:
     or two secret rules hitting one value) must not both survive. Keep one:
     higher tier, then higher confidence, then longer span.
     """
-    ranked = sorted(findings, key=lambda f: (-_RANK[f.tier], -f.confidence,
+    ranked = sorted(findings, key=lambda f: (-_RANK[f.tier], -f.confidence, f.entity_type == 'generic-api-key',
                                              -(f.end - f.start), f.start))
     kept: list[Finding] = []
     for f in ranked:
@@ -321,6 +334,7 @@ def detect(text: str, layers: tuple[str, ...] = ("regex", "presidio")) -> list[F
     for layer in layers:
         findings.extend(get_engine(layer).detect(text))
     return _resolve_overlaps(findings)
+    
 
 
 # =============================================================================
@@ -364,3 +378,14 @@ if __name__ == "__main__":
         for _ in range(50):
             detect(prompt, layers=layers)
         print(f"   {'+'.join(layers):<15} {(time.perf_counter() - t0) / 50 * 1000:6.2f} ms")
+
+    with open('results/detector_results.txt', 'w', encoding='utf-8') as out:
+        for i, s in enumerate(samples):
+            out.write(f'{i + 1}. PROMPT: {s}\n')
+            found = detect(s)
+            if not found:
+                out.write('(no findings)\n')
+            for f in found:
+                flag = 'ESCALATE' if f.needs_escalation else 'confident'
+                out.write(f'{f.entity_type: <16} {f.tier.value:<13} {f.confidence:<5.2f}' f'[{f.start}: {f.end}] {f.text!r:<28} {flag:<9} <- {f.source}\n')
+            out.write('\n')

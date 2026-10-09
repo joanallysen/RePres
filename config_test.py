@@ -4,7 +4,7 @@ def main():
     # array 0 for showing secret rules ajsut wrnd 1 for failure
     # every secret rule is defaulted to 0.85 as of right now
     rules, failure, dict = load_secret_rules('gitleaks.toml')
-    with open("config_test_results.txt", "w", encoding="utf-8") as f:
+    with open("results/config_test_results.txt", "w", encoding="utf-8") as f:
         f.write("GITLEAKS CONFIG TEST\n")
 
         f.write(f"SUCCESSFUL RULES: {len(rules)}\n")
