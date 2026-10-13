@@ -21,11 +21,11 @@ POLICY = {
 # regex, presidio, and local LLM uses score, high = confident
 def action_for(f : Finding) -> Action:
     confident, unsure = POLICY[f.tier]
-    return unsure if f.need_escalation else confident
+    return unsure if f.needs_escalation else confident
 
 # return the final action for the whole prompt
 def decide(findings: list[Finding]) -> tuple[Action, list[tuple[Finding, Action]]]:
-    per_finding = [(f, action_for(f) for f in findings)]
+    per_finding = [(f, action_for(f)) for f in findings]
     final = max((a for _, a in per_finding), key=_RANK.get, default=Action.ALLOW)
     return final, per_finding
 

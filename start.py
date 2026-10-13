@@ -18,7 +18,7 @@ if __name__ == '__main__':
         prompts = [' '.join(sys.argv[1:])]
     else:
         from samples import samples
-        prompts = samples
+        prompts = [samples[0], samples[1]]
 
     for p  in prompts:
         t0 = time.perf_counter()
