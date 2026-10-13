@@ -158,20 +158,6 @@ class Finding:
         """True when the fast layer is unsure -> hand to the local LLM (Stage E)."""
         return self.confidence < CONFIDENT_AT
 
-    @property
-    def preview(self) -> str:
-        """Safe-to-print version of text: secrets are truncated."""
-        # its okay to show the secret as the sample is not real secret.
-        # return self.text[:4] + "***" if self.tier is Tier.SECRET else self.text
-        return self.text
-
-    def to_dict(self) -> dict:
-        return {"entity_type": self.entity_type, "text": self.text,
-                "start": self.start, "end": self.end,
-                "confidence": round(self.confidence, 3),
-                "tier": self.tier.value, "source": self.source,
-                "needs_escalation": self.needs_escalation}
-
 
 class DetectionEngine(ABC):
     """Common interface. The Stage E LocalLLMClassifier can implement it too."""
