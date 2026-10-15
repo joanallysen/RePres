@@ -1,3 +1,4 @@
+import os
 import math
 import time
 from abc import ABC, abstractmethod
@@ -124,24 +125,22 @@ SECRET_RULES: list[SecretRule] = [
         score=0.9,
     )
 ]
-# --- Allowlist (checked against the EXTRACTED secret, like Gitleaks "stopwords") ---
+# below are the allowlist
+
 # Placeholder-looking values: confidence x0.4 (lands in the "unsure" band, or is dropped).
 ALLOW_STOPWORDS: tuple[str, ...] = (
     "example", "changeme", "change_me", "your_", "your-", "xxxx",
     "placeholder", "dummy", "sample", "fake", "redacted", "todo",
 )
-# Values that are never a real secret: dropped.
+# fake secret is just dropped immediately
 ALLOW_EXACT: set[str] = {"password", "secret", "token", "apikey", "api_key",
                          "string", "null", "none", "true", "false"}
+
 # Regexes matched against the extracted secret: dropped. Example: r"^[0-9a-f]{40}$" ignores git SHAs.
 ALLOW_REGEXES: list[str] = []
 
 # from gitleaks global allowlist stopwords or regexes, hard drop make score to 0, unlike allow stopword which only demote the score, populated at regex engine creation
 ALLOW_STOPWORDS_HARD: list[str] = []
-
-# =============================================================================
-# 2. FINDING - the record every later stage consumes
-# =============================================================================
 
 @dataclass(frozen=True)
 class Finding:
@@ -158,6 +157,10 @@ class Finding:
         """True when the fast layer is unsure -> hand to the local LLM (Stage E)."""
         return self.confidence < CONFIDENT_AT
 
+    @property
+    # no censoring as the data is synthetic in the first place
+    def preview(self) -> str:
+        return self.text
 
 class DetectionEngine(ABC):
     """Common interface. The Stage E LocalLLMClassifier can implement it too."""
@@ -166,11 +169,6 @@ class DetectionEngine(ABC):
     @abstractmethod
     def detect(self, text: str) -> list[Finding]:
         ...
-
-
-# =============================================================================
-# 3. REGEX DETECTOR - secrets, no Presidio / spaCy involved
-# =============================================================================
 
 def _entropy(s: str) -> float:
     """Shannon entropy in bits per character (random-looking strings score high)."""
@@ -227,11 +225,6 @@ class RegexDetector(DetectionEngine):
             score *= 0.6
         return round(score, 3)
 
-
-# =============================================================================
-# 4. PRESIDIO DETECTOR - PII only, built-in recognizers
-# =============================================================================
-
 class PresidioDetector(DetectionEngine):
     layer = "presidio"
 
@@ -278,11 +271,6 @@ class PresidioDetector(DetectionEngine):
                                     float(r.score), PII_ENTITY_TIER[r.entity_type], self.layer))
         return findings
 
-
-# =============================================================================
-# 5. MERGE + detect()
-# =============================================================================
-
 def _resolve_overlaps(findings: list[Finding]) -> list[Finding]:
     """
     Two findings on the same characters (e.g. an email inside a connection string,
@@ -297,10 +285,8 @@ def _resolve_overlaps(findings: list[Finding]) -> list[Finding]:
             kept.append(f)
     return sorted(kept, key=lambda f: f.start)
 
-
 _ENGINES: dict[str, DetectionEngine] = {}
 _ENGINE_CLASSES = {"regex": RegexDetector, "presidio": PresidioDetector}
-
 
 # _ENGINES will always start out empty, this get_engine create a new instance of the detector
 # example: _ENGINES["presidio"] = PresidioDetector()
@@ -322,21 +308,14 @@ def detect(text: str, layers: tuple[str, ...] = ("regex", "presidio")) -> list[F
     return _resolve_overlaps(findings)
     
 
-
-# =============================================================================
-# 6. DEMO - all values below are fake
-# =============================================================================
-
-
-
 def line_of(text, start, end):
     ls = text.rfind("\n", 0, start) + 1
     le = text.find("\n", end)
     return text[ls: len(text) if le == -1 else le]
 
 
-
 # write the sample later, i cannot push to github because the sample was too realistic lol
+# this is if the user want to run this file specifically, it will show how regex and presidio works (python detector.py)
 if __name__ == "__main__":
     from samples import samples
     
@@ -365,6 +344,7 @@ if __name__ == "__main__":
             detect(prompt, layers=layers)
         print(f"   {'+'.join(layers):<15} {(time.perf_counter() - t0) / 50 * 1000:6.2f} ms")
 
+    os.makedirs('results', exist_ok=True)
     with open('results/detector_results.txt', 'w', encoding='utf-8') as out:
         for i, s in enumerate(samples):
             out.write(f'{i + 1}. PROMPT: {s}\n')

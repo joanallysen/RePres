@@ -4,7 +4,7 @@ import regex as re
 import tomllib
 from pathlib import Path
 
-from detector import SecretRule, Allowlist, DEFAULT_SCORE
+from regex_and_presidio import SecretRule, Allowlist, DEFAULT_SCORE
 
 def _parse_allowlist(section: dict) -> Allowlist | None:
     # as we are gonna only receive plain text, "AND" + paths can never be true

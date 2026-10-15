@@ -1,6 +1,6 @@
 from enum import Enum
 
-from detector import Finding, Tier
+from regex_and_presidio import Finding, Tier
 
 class Action(str, Enum):
     ALLOW = 'allow'

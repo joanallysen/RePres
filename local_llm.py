@@ -1,5 +1,5 @@
 from openai import OpenAI, OpenAIError
-from detector import Finding, Tier
+from regex_and_presidio import Finding, Tier
 from samples import samples
 import json
 import time
@@ -32,7 +32,7 @@ For each item give:
     PII_MODERATE  names, emails, phone numbers, religion or politics
     PII_LOW       locations, ip addresses, mac addresses
 - span: copied exactly from the text
-- confidence: a number from 0 to 1. Above 0.9 only if you are sure, below 0.5 if ambiguous.
+- confidence: exactly one of "low", "medium", "high". Use "high" only if you are sure, "low" if ambiguous.
  
 Rules:
 - Credentials can be written in plain words, e.g. "the db password is ...".
@@ -40,7 +40,7 @@ Rules:
 - If nothing is sensitive, return an empty list.
  
 Example text: login as admin, the db password is Tr0ub4dor&3
-Example answer: {"findings": [{"type": "password", "tier": "SECRET", "span": "Tr0ub4dor&3", "confidence": high}]}
+Example answer: {"findings": [{"type": "password", "tier": "SECRET", "span": "Tr0ub4dor&3", "confidence": "high"}]}
 """
 
 # return llm finding
@@ -50,8 +50,8 @@ def ask_llm(text: str) -> list[Finding] | None:
     model = MODEL,
     messages = [
         { 'role': 'system', 'content': SYSTEM_PROMPT},
-        { 'role' : 'user','content': ('classify this text: \n'f'<text>\n{SAMPLE}\n</text>')},
-        ], temperature = 0, max_tokens=300, reasoning_effort='none',
+        { 'role' : 'user','content': ('classify this text: \n'f'<text>\n{text}\n</text>')},
+        ], temperature = 0, max_tokens=500, reasoning_effort='none',
         response_format={
             'type': 'json_schema',
             'json_schema': {
@@ -80,7 +80,8 @@ def ask_llm(text: str) -> list[Finding] | None:
         },
     }}
 )
-    except OpenAIError:
+    except OpenAIError as r:
+        print(f'LLM error: {type(e).__name__}: {e}')
         return None
     
     choice = response.choices[0]
@@ -88,11 +89,21 @@ def ask_llm(text: str) -> list[Finding] | None:
         print('finish_reason:', choice.finish_reason)
         print('usage:', response.usage)
 
+    # check truncation or empty before parsing
     if choice.finish_reason == 'length' or not choice.message.content:
+        print('llm output truncated or empty')
         return None
 
+    # make sure that the llm actually return valid json
+    try:
+        items = json.loads(choice.message.content)['findings']
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        print(f'LLM returned bad JSON: {type(e).__name__}: {e}')
+        return None
+
+    #TODO: need to check if items actually exist here
     findings = []
-    for item in json.loads(choice.message.content)['findings']:
+    for item in items:
         span = item['span']
         i = text.find(span) if span else -1     # a span that is not in the text is dropped
         while i != -1:                          # every occurrence, so masking later gets all of them
@@ -108,13 +119,14 @@ def ask_llm(text: str) -> list[Finding] | None:
 if __name__ == '__main__':
     from samples import samples
 
-    SAMPLE = samples[2]
+    SAMPLE = samples[31]
     print('model chosen: ', MODEL)
     start_time = time.perf_counter()
     result = ask_llm(SAMPLE)
     end_time = time.perf_counter()
  
     print('sample: ', SAMPLE)
+    print('Local LLM Result: ')
     if result is None:
         print('LLM failed')
     for f in result or []:
