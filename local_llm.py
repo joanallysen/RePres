@@ -31,6 +31,7 @@ For each item give:
     PII_HIGH      social security numbers, financial accounts, credit cards, medical data, government-issued ids
     PII_MODERATE  names, emails, phone numbers, religion or politics
     PII_LOW       locations, ip addresses, mac addresses
+    BENIGN        non-sensitive information, public data, and safe placeholders or example credentials
 - span: copied exactly from the text
 - confidence: exactly one of "low", "medium", "high". Use "high" only if you are sure, "low" if ambiguous.
  
@@ -66,7 +67,7 @@ def ask_llm(text: str) -> list[Finding] | None:
                                 'type': 'object',
                                 'properties': {
                                     'type' : {'type' : 'string'},
-                                    'tier' : {'type' : 'string', 'enum': ['SECRET', 'PII_HIGH', 'PII_MODERATE', 'PII_LOW']},
+                                    'tier' : {'type' : 'string', 'enum': ['SECRET', 'PII_HIGH', 'PII_MODERATE', 'PII_LOW', 'BENIGN']},
                                     'span': {'type': 'string'},
                                     'confidence': {'type': 'string', 'enum': ['low', 'medium', 'high']},
                                 },

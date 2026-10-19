@@ -2,7 +2,7 @@ import sys
 import time
 from regex_and_presidio import detect, _resolve_overlaps
 from local_llm import ask_llm 
-from policy_engine import decide
+from policy_engine import decide, FAILURE_MODE, action_for, Action
 
 def scan(text: str):
     findings = detect(text)
@@ -13,6 +13,11 @@ def scan(text: str):
         llm_findings = ask_llm(text)
         if llm_findings is None:
             llm_status = "failed"
+            print('llm failed to process prompt, action chosen based on fail open or fail closed')
+            if FAILURE_MODE == 'closed':
+                per_finding = [(f, action_for(f)) for f in findings]
+                return Action.BLOCK, per_finding, llm_status, triggers
+            # fail open retain regex and presidio findings
         else:
             llm_status = "ok"
             findings = _resolve_overlaps(findings + llm_findings)
@@ -25,7 +30,7 @@ if __name__ == '__main__':
         prompts = [' '.join(sys.argv[1:])]
     else:
         from samples import samples
-        prompts = [samples[31], samples[1], samples[2]]
+        prompts = [samples[0], samples[31], samples[1], samples[2]]
 
     for p in prompts:
         t0 = time.perf_counter()
@@ -41,7 +46,6 @@ if __name__ == '__main__':
             if llm_status == 'ok':
                 print(f'    Escalated to the local LLM because of: {why}.')
             else:
-                print(f'    Escalation to the local LLM failed (triggered by: {why}); '
-                      f'using regex/Presidio results only.')
+                print(f'    Escalation to the local LLM failed (triggered by: {why}); fail-{FAILURE_MODE}')
         
         print(f'    ACTION : {action.value.upper()} ({ms:.0f} ms)\n')
