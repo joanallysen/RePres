@@ -7,6 +7,7 @@ This document covers the **detection and decision stages**:
 1. a **fast layer**: a regex engine for secrets and a Presidio engine for PII
 2. a **local LLM classifier** that re-checks anything the fast layer is unsure about
 3. a **policy engine** that turns the findings into one action: allow, warn, mask or block
+4. a **sanitizer** (`opaque/`) that replaces every finding with a format-preserving surrogate and stores the mapping in SQLite so the response can be restored
 
 ## End-to-end flow
 
@@ -17,11 +18,10 @@ This document covers the **detection and decision stages**:
 | 3 | Regex checks for secrets by pattern, Presidio checks for personally identifiable information | Done |
 | 4 | Confident results go straight to the policy engine. Unsure results are escalated to the local LLM first | Done |
 | 5 | The policy engine decides Allow, Warn, Mask or Block from tier-specific policies | Done |
-| 6 | For allowed or masked content, sensitive values are replaced with opaque tokens | Planned |
+| 6 | Every finding is replaced with a format-preserving surrogate (not an opaque token), whatever the action, BLOCK included | Done for secrets. PII generators written, untested |
 | 7 | The sanitized prompt is sent to the external LLM (OpenAI, Claude, Gemini) | Planned |
-| 8 | In the response, tokens are restored to the original values from an SQLite mapping store | Planned |
+| 8 | In the response, surrogates are restored to the original values from the SQLite mapping (`Vault.restore`) | Implemented, not yet wired to the gateway |
 | 9 | The restored output is validated before it is returned to the user | Planned |
-
 ## Architecture
 
 ```mermaid
@@ -47,8 +47,8 @@ flowchart LR
     LLM -- "failed" --> POL
     MG2 --> POL["Policy engine<br/>decide(findings)"]
     POL --> OUT["ALLOW / WARN / MASK / BLOCK"]
-    OUT -.-> SAN["Token sanitization<br/>(planned)"]
-    SAN -.-> CLOUD["External LLM"]
+    OUT --> SAN["Vault.sanitize<br/>surrogates + SQLite mapping"]
+    SAN -.-> CLOUD["External LLM (planned)"]
 ```
 
 Solid boxes exist today. Dashed paths and boxes marked *planned* are not built yet. Findings below confidence 0.35 are discarded inside the detectors and never reach the diagram above.
@@ -87,6 +87,10 @@ flowchart TD
 | `samples.py` | Synthetic prompts (all values fake) used to test the detectors |
 | `gitleaks.toml` | Gitleaks default config |
 | `results/detector_results.txt` | Generated report. Consider adding `results/` to `.gitignore` |
+| `opaque/pseudo.py` | Surrogate generators (secrets and PII), `Vault` (SQLite mapping, `sanitize()`, `restore()`) |
+| `opaque/keywords.py` | `KEYWORDS`: known secret prefixes preserved in the surrogate |
+| `opaque/test_set.py` | Sample secrets to test the surrogate generator |
+| `vault.db`, `vault.key` | Generated at runtime. Add both to `.gitignore`: the database holds real values |
 
 ## How it works
 
@@ -211,7 +215,30 @@ Actions are ranked `ALLOW` (0) < `WARN` (1) < `MASK` (2) < `BLOCK` (3).
 
 An unsure result usually means the LLM was unavailable or was itself unsure, because LLM answers replace unsure fast-layer findings when they overlap and are more confident.
 
-### 9. Putting it together (`main.py`)
+### 9. Sanitizer (`opaque/pseudo.py`)
+
+Every finding is replaced with a surrogate that looks like the real value, so the cloud LLM still understands the prompt. The action (ALLOW, WARN, MASK, BLOCK) is currently only reported. The sanitizer runs on all findings, so BLOCK does not stop the prompt from being sent in this flow.
+
+**Secrets.** The longest keyword from `KEYWORDS` found anywhere in the secret is kept, and everything else is randomized by character class (digit, upper, lower). Symbols such as `-` and `_` stay.
+
+**PII.**
+
+| Entity | Surrogate |
+|---|---|
+| `PERSON`, `LOCATION` | Faker name or city |
+| `EMAIL_ADDRESS` | Faker `safe_email()` (`example.*` domain, so the real domain does not leak) |
+| `CREDIT_CARD` | Random digits with a valid Luhn check digit |
+| `IBAN_CODE` | Same country code, random body, recomputed check digits |
+| `IP_ADDRESS` | Random address in a documentation range |
+| Phone, SSN, ITIN, passport, driver licence, bank number, NHS, medical licence, MAC | Format-preserving randomization |
+
+Unknown labels (free-form LLM types) fall back to the tier: PII tiers use format-preserving randomization, `SECRET` uses the secret logic.
+
+**Deterministic and persistent.** The random generator is seeded from `HMAC-SHA256(key, "attempt:value")`, so the same value always produces the same surrogate across prompts and restarts. The model therefore sees stable values over a conversation. The key lives in `vault.key` (created on first run, owner-only permissions).
+
+**Vault.** Table `mapping(workspace, fake, real)`, primary key `(workspace, fake)`. If a surrogate equals the real value or collides with a different value's surrogate, `surrogate()` retries up to 20 times with a changed `attempt`. `sanitize()` replaces spans right to left, then replaces leftover occurrences of each flagged value (word boundaries for PII). `restore()` replaces all surrogates in one regex pass, longest first.
+
+### 10. Putting it together (`main.py`)
 
 `scan(text)` runs the stages in order:
 
@@ -226,7 +253,7 @@ Running `main.py` prints one block per prompt: a table row for each finding (ent
 Python 3.11 or newer (the loader uses `tomllib`).
 
 ```bash
-pip install regex presidio-analyzer tldextract spacy openai
+pip install regex presidio-analyzer tldextract spacy openai Faker
 python -m spacy download en_core_web_sm
 ```
 
@@ -281,6 +308,8 @@ To test the local LLM on its own:
 python local_llm.py
 ```
 
+`main.py` prints a `SANITIZED` line after each prompt. To test the surrogate generator on its own: `python -m opaque.pseudo`
+
 ## Configuration
 
 **`regex_and_presidio.py`**
@@ -312,6 +341,15 @@ python local_llm.py
 | Setting | Purpose |
 |---|---|
 | `POLICY` | Per tier: action when confident, action when unsure |
+
+**`opaque/pseudo.py`**
+
+| Setting | Purpose |
+|---|---|
+| `KEY_PATH` | Location of the HMAC key file |
+| `Vault(path, workspace)` | Database file and the workspace that scopes the mapping |
+| `PII_GENERATORS` | Entity type to surrogate generator |
+| `KEYWORDS` (`opaque/keywords.py`) | Prefixes preserved inside secret surrogates |
 
 ### Adding a custom secret rule
 
@@ -358,12 +396,25 @@ Observed while testing against the synthetic prompts in `samples.py`:
 **Policy**
 
 - **Strictest action wins.** An unsure `SECRET` gives `WARN` and a confident email gives `MASK`, so the prompt's final action is `MASK`. The unsure secret still needs its own handling in the sanitization step.
-- **`WARN` has no defined next step yet.** Step 6 (tokenization) is specified for allowed and masked content only. Decide whether a warned finding is sent, masked, or confirmed by the user.
 - **`PII_LOW` unsure becomes `ALLOW`.** Low-confidence locations, IP addresses and MAC addresses pass through unflagged.
+
+
+**Sanitizer**
+
+- **Tested only on secrets.** Secrets were checked on sample prompts. The PII generators are untested.
+- **Plaintext mapping.** `vault.db` stores real values unencrypted. Restrict file permissions or encrypt the `real` column.
+- **Leftover-copy pass can corrupt fakes.** It runs on text that already contains surrogates, so a short real value can be replaced inside one. Fix: collect all occurrences from the original text and replace in a single pass.
+- **Generators can raise on malformed detections** (`fake_card` with no digits, `fake_iban` with symbols). Fall back to `randomize`.
+- **Shared Faker instance** is reseeded on each call and is not thread-safe.
+- **Restore is exact-match.** A model that replies with only a first name or a possessive will not restore. Expect misses for `PERSON`.
+- **Same text with two entity types** gets two different surrogates.
+- **Surrogates for randomized entities** (SSN, NHS and similar) may fail Presidio's validators, which affects format-fidelity metrics.
+- **Kept keywords are real characters.** The leak-rate metric should exclude them.
+- **Partial overlaps.** `_resolve_overlaps` drops the losing finding, so characters of a losing span outside the winner stay unsanitized.
+- **Over-flagging** (a code identifier tagged `PERSON` or `LOCATION`) renames it in the code.
 
 ## Roadmap
 
-- Step 6: token sanitization, replacing sensitive values with opaque tokens before the prompt is sent
 - Step 7: forward the sanitized prompt to the external LLM
 - Step 8: token restoration from an SQLite mapping store
 - Step 9: validation of the restored response

@@ -81,7 +81,7 @@ def ask_llm(text: str) -> list[Finding] | None:
         },
     }}
 )
-    except OpenAIError as r:
+    except OpenAIError as e:
         print(f'LLM error: {type(e).__name__}: {e}')
         return None
     

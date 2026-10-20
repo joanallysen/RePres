@@ -3,6 +3,7 @@ import time
 from regex_and_presidio import detect, _resolve_overlaps
 from local_llm import ask_llm 
 from policy_engine import decide, FAILURE_MODE, action_for, Action
+from opaque.pseudo import Vault
 
 def scan(text: str):
     findings = detect(text)
@@ -32,6 +33,7 @@ if __name__ == '__main__':
         from samples import samples
         prompts = [samples[0], samples[31], samples[1], samples[2]]
 
+    vault = Vault()
     for p in prompts:
         t0 = time.perf_counter()
         action, per_finding, llm_status, triggers = scan(p)
@@ -49,3 +51,7 @@ if __name__ == '__main__':
                 print(f'    Escalation to the local LLM failed (triggered by: {why}); fail-{FAILURE_MODE}')
         
         print(f'    ACTION : {action.value.upper()} ({ms:.0f} ms)\n')
+        print(f'    SANITIZED : {vault.sanitize(p, [f for f, a in per_finding])}\n')
+
+
+

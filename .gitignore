@@ -2,3 +2,6 @@ samples.py
 .venv
 results
 qwen_test.py
+vault.db
+vault.key
+
