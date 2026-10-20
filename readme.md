@@ -238,6 +238,8 @@ Unknown labels (free-form LLM types) fall back to the tier: PII tiers use format
 
 **Vault.** Table `mapping(workspace, fake, real)`, primary key `(workspace, fake)`. If a surrogate equals the real value or collides with a different value's surrogate, `surrogate()` retries up to 20 times with a changed `attempt`. `sanitize()` replaces spans right to left, then replaces leftover occurrences of each flagged value (word boundaries for PII). `restore()` replaces all surrogates in one regex pass, longest first.
 
+test_set.py is needed to run pseudo.py
+
 ### 10. Putting it together (`main.py`)
 
 `scan(text)` runs the stages in order:
